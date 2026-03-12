@@ -53,6 +53,17 @@ r[index.storage.dir-config]
 The index directory path MUST be configurable. The default MUST be
 `.brain-index/` relative to the brain root.
 
+## Automatic Reindexing
+
+r[index.startup-reindex]
+On startup, the server MUST perform an incremental reindex before accepting tool
+calls, so the index reflects any files changed while the server was not running.
+
+r[index.watch]
+The server MUST watch the brain root for filesystem changes and trigger an
+incremental reindex after a 2-second debounce period following the last detected
+change.
+
 ## Error Handling
 
 r[index.error.embed-fail]
