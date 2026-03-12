@@ -204,10 +204,13 @@ impl Indexer {
         let mut files_processed = 0;
         let mut chunks_indexed = 0;
 
+        let force = !paths.is_empty();
         for (_, file_hash, chunks) in &to_process {
-            let stored_hash = self.get_stored_hash(&table, &chunks[0].file_path).await?;
-            if stored_hash.as_deref() == Some(file_hash.as_str()) {
-                continue;
+            if !force {
+                let stored_hash = self.get_stored_hash(&table, &chunks[0].file_path).await?;
+                if stored_hash.as_deref() == Some(file_hash.as_str()) {
+                    continue;
+                }
             }
 
             // r[impl index.upsert]
