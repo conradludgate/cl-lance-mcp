@@ -18,10 +18,10 @@ When `top_k` is not specified, search MUST default to 10 results.
 ## Hybrid Search
 
 r[search.hybrid]
-Search SHOULD support hybrid mode combining vector similarity with full-text
-keyword matching for exact identifiers (Jira tickets, instance IDs, names). If
-the Rust LanceDB SDK does not support native hybrid queries, the server MUST
-implement two-pass search (vector + FTS) and merge results in application code.
+Search MUST combine vector similarity with full-text keyword matching so that
+exact identifiers (Jira tickets, instance IDs, names) surface alongside
+semantically similar results. The server MUST create an FTS index on the content
+column and use LanceDB's native hybrid query support.
 
 ## Results
 

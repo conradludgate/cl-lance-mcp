@@ -38,7 +38,7 @@ pub struct ReindexParams {
 impl ServerHandler for BrainServer {
     fn get_info(&self) -> ServerInfo {
         ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
-            .with_instructions("Brain RAG search server")
+            .with_instructions(include_str!("instructions.md"))
     }
 }
 

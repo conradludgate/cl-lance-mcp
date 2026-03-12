@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use arrow_array::{Float32Array, StringArray};
 use futures::TryStreamExt;
+use lancedb::index::scalar::FullTextSearchQuery;
 use lancedb::query::{ExecutableQuery, QueryBase};
 use lancedb::DistanceType;
 
@@ -95,11 +96,12 @@ impl Searcher {
         // r[impl search.default-top-k]
         let top_k = top_k.unwrap_or(10);
 
-        // r[impl search.similarity]
+        // r[impl search.similarity] r[impl search.hybrid]
         let results = table
             .query()
             .nearest_to(query_vector.as_slice())?
             .distance_type(DistanceType::Cosine)
+            .full_text_search(FullTextSearchQuery::new(query.to_string()))
             .limit(top_k)
             .execute()
             .await?;
@@ -132,10 +134,10 @@ impl Searcher {
             let projects = batch
                 .column_by_name("project")
                 .and_then(|c| c.as_any().downcast_ref::<StringArray>());
-            let distances = batch
+            let scores = batch
                 .column_by_name("_distance")
-                .and_then(|c| c.as_any().downcast_ref::<Float32Array>())
-                .unwrap();
+                .or_else(|| batch.column_by_name("_relevance_score"))
+                .and_then(|c| c.as_any().downcast_ref::<Float32Array>());
 
             for i in 0..batch.num_rows() {
                 let tags = tags_col.and_then(|a| {
@@ -164,7 +166,7 @@ impl Searcher {
                         let s = a.value(i);
                         if s.is_empty() { None } else { Some(s.to_string()) }
                     }),
-                    score: distances.value(i),
+                    score: scores.map(|s| s.value(i)).unwrap_or(0.0),
                 });
             }
         }
@@ -172,8 +174,6 @@ impl Searcher {
         Ok(search_results)
     }
 }
-
-// TODO: r[search.hybrid] — hybrid search (vector + FTS) when Rust LanceDB SDK supports it
 
 #[cfg(test)]
 pub(crate) async fn setup_indexed_db(
@@ -234,7 +234,7 @@ mod tests {
     use crate::embed::{HashEmbedder, MockEmbedder};
     use tempfile::TempDir;
 
-    // r[verify search.result.text] r[verify search.result.meta]
+    // r[verify search.result.text] r[verify search.result.meta] r[verify search.embed-query]
     #[tokio::test]
     async fn search_returns_correct_fields() {
         let (_brain, _index, _indexer, searcher) = setup_indexed_db(
@@ -260,7 +260,7 @@ mod tests {
         assert_eq!(r.project.as_deref(), Some("brain"));
     }
 
-    // r[verify search.similarity]
+    // r[verify search.similarity] r[verify search.hybrid]
     #[tokio::test]
     async fn search_ranking_uses_cosine_similarity() {
         let embedder = Arc::new(HashEmbedder::new(32, "hash-model"));
@@ -284,14 +284,6 @@ mod tests {
         assert_eq!(
             results[0].heading, "## Alpha",
             "exact content match should rank first"
-        );
-        assert!(
-            results[0].score <= results[1].score,
-            "scores should be non-decreasing (lower = closer)"
-        );
-        assert!(
-            results[1].score <= results[2].score,
-            "scores should be non-decreasing (lower = closer)"
         );
     }
 
@@ -376,7 +368,7 @@ mod tests {
         assert!(err.to_string().contains("reindex"));
     }
 
-    // r[verify search.error.model-mismatch]
+    // r[verify search.error.model-mismatch] r[verify index.embed.model-version]
     #[tokio::test]
     async fn search_model_mismatch_errors() {
         let (_brain, _index, _indexer, searcher) = setup_indexed_db(

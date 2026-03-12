@@ -7,9 +7,10 @@ use arrow_array::{RecordBatch, RecordBatchIterator};
 use arrow_schema::{DataType, Field, Schema};
 use futures::TryStreamExt;
 use lancedb::database::CreateTableMode;
+use lancedb::index::Index;
 use lancedb::query::{ExecutableQuery, QueryBase, Select};
 use lancedb::{connect, Table};
-use sha2::{Digest, Sha256};
+use blake3::Hasher;
 use walkdir::WalkDir;
 
 use crate::chunk::{chunk_file, Chunk};
@@ -40,17 +41,15 @@ pub struct Indexer {
 }
 
 fn content_hash(content: &[u8]) -> String {
-    let mut hasher = Sha256::new();
-    hasher.update(content);
-    format!("{:x}", hasher.finalize())
+    blake3::hash(content).to_hex().to_string()
 }
 
 fn chunk_id(file_path: &str, heading: &str) -> String {
-    let mut hasher = Sha256::new();
+    let mut hasher = Hasher::new();
     hasher.update(file_path.as_bytes());
     hasher.update(b"::");
     hasher.update(heading.as_bytes());
-    format!("{:x}", hasher.finalize())
+    hasher.finalize().to_hex().to_string()
 }
 
 // r[impl index.scan.md-only] r[impl index.scan.recursive]
@@ -144,11 +143,15 @@ impl Indexer {
         };
         let batches =
             RecordBatchIterator::new(vec![Ok(batch)].into_iter(), Arc::new(schema.clone()));
-        self.db
+        let table = self
+            .db
             .create_table("chunks", Box::new(batches))
             .mode(CreateTableMode::Overwrite)
             .execute()
             .await?;
+
+        // r[impl search.hybrid]
+        self.create_fts_index(&table).await?;
 
         Ok(IndexStats {
             files_processed,
@@ -248,6 +251,10 @@ impl Indexer {
             }
         }
 
+        if files_processed > 0 {
+            self.create_fts_index(&table).await?;
+        }
+
         Ok(IndexStats {
             files_processed,
             chunks_indexed,
@@ -261,6 +268,7 @@ impl Indexer {
 
         let indexer = self.clone();
         let brain_root = self.brain_root.clone();
+        let index_dir = self.index_dir.canonicalize().unwrap_or(self.index_dir.clone());
         let rt = tokio::runtime::Handle::current();
 
         let mut debouncer = new_debouncer(
@@ -269,6 +277,7 @@ impl Indexer {
                 let paths: Vec<PathBuf> = match result {
                     Ok(events) => events
                         .into_iter()
+                        .filter(|e| !e.path.starts_with(&index_dir))
                         .filter(|e| {
                             e.path
                                 .extension()
@@ -570,6 +579,14 @@ impl Indexer {
         .map_err(Into::into)
     }
 
+    async fn create_fts_index(&self, table: &Table) -> Result<()> {
+        table
+            .create_index(&["content"], Index::FTS(Default::default()))
+            .execute()
+            .await?;
+        Ok(())
+    }
+
     async fn open_or_create_table(&self, dimension: usize) -> Result<Table> {
         if self.db.table_names().execute().await?.contains(&"chunks".to_string()) {
             Ok(self.db.open_table("chunks").execute().await?)
@@ -661,7 +678,7 @@ mod tests {
         tokio::fs::write(path, content).await.unwrap();
     }
 
-    // r[verify index.full]
+    // r[verify index.full] r[verify index.scan.root] r[verify index.storage.lance]
     #[tokio::test]
     async fn full_reindex_indexes_all_md_files() {
         let (indexer, brain, _) = setup_indexer().await;
@@ -855,7 +872,7 @@ Content"#,
         assert_eq!(indexer.model_name(), "test-model");
     }
 
-    // r[verify index.startup-reindex]
+    // r[verify index.startup-reindex] r[verify index.storage.dir-config]
     #[tokio::test]
     async fn startup_incremental_reindex_catches_new_files() {
         let (indexer, brain, _) = setup_indexer().await;
