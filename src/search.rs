@@ -2,9 +2,9 @@ use std::sync::Arc;
 
 use arrow_array::{Float32Array, StringArray};
 use futures::TryStreamExt;
+use lancedb::DistanceType;
 use lancedb::index::scalar::FullTextSearchQuery;
 use lancedb::query::{ExecutableQuery, QueryBase};
-use lancedb::DistanceType;
 
 use crate::embed::Embedder;
 
@@ -155,16 +155,28 @@ impl Searcher {
                     heading: headings.value(i).to_string(),
                     date: dates.and_then(|a| {
                         let s = a.value(i);
-                        if s.is_empty() { None } else { Some(s.to_string()) }
+                        if s.is_empty() {
+                            None
+                        } else {
+                            Some(s.to_string())
+                        }
                     }),
                     doc_type: doc_types.and_then(|a| {
                         let s = a.value(i);
-                        if s.is_empty() { None } else { Some(s.to_string()) }
+                        if s.is_empty() {
+                            None
+                        } else {
+                            Some(s.to_string())
+                        }
                     }),
                     tags,
                     project: projects.and_then(|a| {
                         let s = a.value(i);
-                        if s.is_empty() { None } else { Some(s.to_string()) }
+                        if s.is_empty() {
+                            None
+                        } else {
+                            Some(s.to_string())
+                        }
                     }),
                     score: scores.map(|s| s.value(i)).unwrap_or(0.0),
                 });
@@ -251,7 +263,10 @@ mod tests {
 
         assert_eq!(results.len(), 1);
         let r = &results[0];
-        assert!(r.text.contains("Content about foo"), "text should contain chunk content");
+        assert!(
+            r.text.contains("Content about foo"),
+            "text should contain chunk content"
+        );
         assert_eq!(r.file_path, "doc.md");
         assert_eq!(r.heading, "## Section One");
         assert_eq!(r.date.as_deref(), Some("2024-03-01"));
@@ -329,12 +344,8 @@ mod tests {
     // r[verify search.error.empty-query]
     #[tokio::test]
     async fn search_empty_query_errors() {
-        let (_brain, _index, _indexer, searcher) = setup_indexed_db(
-            &[("doc.md", "## X\nContent.")],
-            "model-a",
-            4,
-        )
-        .await;
+        let (_brain, _index, _indexer, searcher) =
+            setup_indexed_db(&[("doc.md", "## X\nContent.")], "model-a", 4).await;
 
         let err = searcher.search("", None).await.unwrap_err();
         assert!(err.to_string().contains("empty"));
@@ -342,12 +353,8 @@ mod tests {
 
     #[tokio::test]
     async fn search_whitespace_query_errors() {
-        let (_brain, _index, _indexer, searcher) = setup_indexed_db(
-            &[("doc.md", "## X\nContent.")],
-            "model-a",
-            4,
-        )
-        .await;
+        let (_brain, _index, _indexer, searcher) =
+            setup_indexed_db(&[("doc.md", "## X\nContent.")], "model-a", 4).await;
 
         let err = searcher.search("   ", None).await.unwrap_err();
         assert!(err.to_string().contains("empty"));
@@ -371,12 +378,8 @@ mod tests {
     // r[verify search.error.model-mismatch] r[verify index.embed.model-version]
     #[tokio::test]
     async fn search_model_mismatch_errors() {
-        let (_brain, _index, _indexer, searcher) = setup_indexed_db(
-            &[("doc.md", "## X\nContent.")],
-            "model-a",
-            4,
-        )
-        .await;
+        let (_brain, _index, _indexer, searcher) =
+            setup_indexed_db(&[("doc.md", "## X\nContent.")], "model-a", 4).await;
 
         let searcher = Searcher::new(
             searcher.connection(),

@@ -1,14 +1,16 @@
 use std::path::PathBuf;
 
 use rmcp::{
+    ServerHandler,
     handler::server::{router::tool::ToolRouter, wrapper::Parameters},
     model::{ServerCapabilities, ServerInfo},
-    tool, tool_handler, tool_router, ServerHandler,
+    tool, tool_handler, tool_router,
 };
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::index::Indexer;
+use crate::leader::{self, ReindexRequest};
 use crate::search::Searcher;
 
 #[derive(Clone)]
@@ -16,6 +18,8 @@ pub struct BrainServer {
     indexer: Indexer,
     searcher: Searcher,
     brain_root: PathBuf,
+    index_dir: PathBuf,
+    is_leader: bool,
     tool_router: ToolRouter<Self>,
 }
 
@@ -44,21 +48,26 @@ impl ServerHandler for BrainServer {
 
 #[tool_router]
 impl BrainServer {
-    pub fn new(indexer: Indexer, searcher: Searcher, brain_root: PathBuf) -> Self {
+    pub fn new(
+        indexer: Indexer,
+        searcher: Searcher,
+        brain_root: PathBuf,
+        index_dir: PathBuf,
+        is_leader: bool,
+    ) -> Self {
         Self {
             indexer,
             searcher,
             brain_root,
+            index_dir,
+            is_leader,
             tool_router: Self::tool_router(),
         }
     }
 
     // r[impl mcp.tool.search]
     #[tool(description = "Search the brain index by semantic similarity")]
-    pub async fn search(
-        &self,
-        params: Parameters<SearchParams>,
-    ) -> Result<String, String> {
+    pub async fn search(&self, params: Parameters<SearchParams>) -> Result<String, String> {
         let results = self
             .searcher
             .search(&params.0.query, params.0.top_k)
@@ -68,8 +77,24 @@ impl BrainServer {
     }
 
     // r[impl mcp.tool.reindex]
-    #[tool(description = "Reindex the brain. Omit path for full reindex, or provide a path to scope.")]
+    #[tool(
+        description = "Reindex the brain. Omit path for full reindex, or provide a path to scope."
+    )]
     pub async fn reindex(&self, params: Parameters<ReindexParams>) -> Result<String, String> {
+        // r[impl daemon.follower.reindex-forward]
+        if !self.is_leader {
+            let req = ReindexRequest {
+                path: params.0.path.clone(),
+            };
+            let stats = leader::forward_reindex(&self.index_dir, &req)
+                .await
+                .map_err(|e| e.to_string())?;
+            return Ok(format!(
+                "files_processed: {}, chunks_indexed: {}",
+                stats.files_processed, stats.chunks_indexed
+            ));
+        }
+
         if let Some(ref p) = params.0.path {
             let full = self.brain_root.join(p);
             // r[impl mcp.tool.reindex.path-invalid]
@@ -104,13 +129,11 @@ impl BrainServer {
     }
 
     // r[impl mcp.tool.catalog] r[impl mcp.tool.catalog.list]
-    #[tool(description = "List all indexed documents with file path, date, type, tags, and project")]
+    #[tool(
+        description = "List all indexed documents with file path, date, type, tags, and project"
+    )]
     pub async fn catalog(&self) -> Result<String, String> {
-        let entries = self
-            .indexer
-            .catalog()
-            .await
-            .map_err(|e| e.to_string())?;
+        let entries = self.indexer.catalog().await.map_err(|e| e.to_string())?;
         serde_json::to_string_pretty(&entries).map_err(|e| e.to_string())
     }
 }
@@ -121,14 +144,16 @@ mod tests {
     use crate::search::setup_indexed_db;
 
     async fn setup_server() -> (BrainServer, tempfile::TempDir, tempfile::TempDir) {
-        let (brain_dir, index_dir, indexer, searcher) = setup_indexed_db(
-            &[("test.md", "## Section\nTest content.")],
-            "test-model",
-            4,
-        )
-        .await;
+        let (brain_dir, index_dir, indexer, searcher) =
+            setup_indexed_db(&[("test.md", "## Section\nTest content.")], "test-model", 4).await;
 
-        let server = BrainServer::new(indexer, searcher, brain_dir.path().to_path_buf());
+        let server = BrainServer::new(
+            indexer,
+            searcher,
+            brain_dir.path().to_path_buf(),
+            index_dir.path().to_path_buf(),
+            true,
+        );
         (server, brain_dir, index_dir)
     }
 
@@ -179,7 +204,13 @@ mod tests {
         )
         .await;
 
-        let server = BrainServer::new(indexer, searcher, brain_dir.path().to_path_buf());
+        let server = BrainServer::new(
+            indexer,
+            searcher,
+            brain_dir.path().to_path_buf(),
+            index_dir.path().to_path_buf(),
+            true,
+        );
         let result = server.catalog().await.unwrap();
         let parsed: Vec<crate::index::CatalogEntry> = serde_json::from_str(&result).unwrap();
         assert_eq!(parsed.len(), 1);

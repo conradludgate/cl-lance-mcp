@@ -1,5 +1,5 @@
-use std::path::Path;
 use serde::Deserialize;
+use std::path::Path;
 
 #[derive(Debug, Clone)]
 pub struct Chunk {
@@ -208,7 +208,10 @@ Content"#;
         assert_eq!(chunks.len(), 1);
         assert_eq!(chunks[0].frontmatter.date.as_deref(), Some("2024-01-15"));
         assert_eq!(chunks[0].frontmatter.doc_type.as_deref(), Some("note"));
-        assert_eq!(chunks[0].frontmatter.tags.as_ref().unwrap(), &["a".to_string(), "b".to_string()]);
+        assert_eq!(
+            chunks[0].frontmatter.tags.as_ref().unwrap(),
+            &["a".to_string(), "b".to_string()]
+        );
         assert_eq!(chunks[0].frontmatter.project.as_deref(), Some("my-project"));
     }
 
@@ -220,7 +223,10 @@ Content"#;
         assert_eq!(chunks.len(), 1);
         assert_eq!(chunks[0].frontmatter.date, None);
         assert_eq!(chunks[0].frontmatter.doc_type, None);
-        assert!(chunks[0].content.contains("## Section"), "file must still be chunked");
+        assert!(
+            chunks[0].content.contains("## Section"),
+            "file must still be chunked"
+        );
     }
 
     #[test]

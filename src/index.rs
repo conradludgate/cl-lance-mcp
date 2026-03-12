@@ -5,18 +5,18 @@ use anyhow::Result;
 use arrow_array::Array;
 use arrow_array::{RecordBatch, RecordBatchIterator};
 use arrow_schema::{DataType, Field, Schema};
+use blake3::Hasher;
 use futures::TryStreamExt;
 use lancedb::database::CreateTableMode;
 use lancedb::index::Index;
 use lancedb::query::{ExecutableQuery, QueryBase, Select};
-use lancedb::{connect, Table};
-use blake3::Hasher;
+use lancedb::{Table, connect};
 use walkdir::WalkDir;
 
-use crate::chunk::{chunk_file, Chunk};
+use crate::chunk::{Chunk, chunk_file};
 use crate::embed::Embedder;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct IndexStats {
     pub files_processed: usize,
     pub chunks_indexed: usize,
@@ -227,10 +227,8 @@ impl Indexer {
                 let schema = Self::chunks_schema(dimension);
                 let batch =
                     Self::chunks_to_record_batch(&indexed, &schema, dimension, &model_name)?;
-                let batches = RecordBatchIterator::new(
-                    vec![Ok(batch)].into_iter(),
-                    Arc::new(schema.clone()),
-                );
+                let batches =
+                    RecordBatchIterator::new(vec![Ok(batch)].into_iter(), Arc::new(schema.clone()));
                 table.add(Box::new(batches)).execute().await?;
             }
         }
@@ -263,12 +261,15 @@ impl Indexer {
 
     // r[impl index.watch]
     pub fn spawn_watcher(&self) -> Result<()> {
-        use notify_debouncer_mini::{new_debouncer, DebounceEventResult};
+        use notify_debouncer_mini::{DebounceEventResult, new_debouncer};
         use std::time::Duration;
 
         let indexer = self.clone();
         let brain_root = self.brain_root.clone();
-        let index_dir = self.index_dir.canonicalize().unwrap_or(self.index_dir.clone());
+        let index_dir = self
+            .index_dir
+            .canonicalize()
+            .unwrap_or(self.index_dir.clone());
         let rt = tokio::runtime::Handle::current();
 
         let mut debouncer = new_debouncer(
@@ -278,11 +279,7 @@ impl Indexer {
                     Ok(events) => events
                         .into_iter()
                         .filter(|e| !e.path.starts_with(&index_dir))
-                        .filter(|e| {
-                            e.path
-                                .extension()
-                                .is_some_and(|ext| ext == "md")
-                        })
+                        .filter(|e| e.path.extension().is_some_and(|ext| ext == "md"))
                         .map(|e| e.path)
                         .collect(),
                     Err(e) => {
@@ -304,10 +301,9 @@ impl Indexer {
             },
         )?;
 
-        debouncer.watcher().watch(
-            &brain_root,
-            notify::RecursiveMode::Recursive,
-        )?;
+        debouncer
+            .watcher()
+            .watch(&brain_root, notify::RecursiveMode::Recursive)?;
 
         // Leak the debouncer so it lives for the process lifetime.
         // The MCP server runs until the process exits, so no cleanup is needed.
@@ -356,11 +352,7 @@ impl Indexer {
                         None
                     } else {
                         let s = arr.value(i).to_string();
-                        if s.is_empty() {
-                            None
-                        } else {
-                            Some(s)
-                        }
+                        if s.is_empty() { None } else { Some(s) }
                     }
                 });
                 let doc_type = doc_type_arr.and_then(|a| {
@@ -369,11 +361,7 @@ impl Indexer {
                         None
                     } else {
                         let s = arr.value(i).to_string();
-                        if s.is_empty() {
-                            None
-                        } else {
-                            Some(s)
-                        }
+                        if s.is_empty() { None } else { Some(s) }
                     }
                 });
                 let tags = tags_arr.and_then(|a| {
@@ -395,11 +383,7 @@ impl Indexer {
                         None
                     } else {
                         let s = arr.value(i).to_string();
-                        if s.is_empty() {
-                            None
-                        } else {
-                            Some(s)
-                        }
+                        if s.is_empty() { None } else { Some(s) }
                     }
                 });
                 entries.push(CatalogEntry {
@@ -428,14 +412,12 @@ impl Indexer {
 
         let texts: Vec<String> = chunks.iter().map(|c| c.content.clone()).collect();
         match self.embedder.embed(&texts) {
-            Ok(vectors) => {
-                Ok(chunks
-                    .into_iter()
-                    .zip(vectors)
-                    .zip(content_hashes)
-                    .map(|((c, v), h)| (c, v, h))
-                    .collect())
-            }
+            Ok(vectors) => Ok(chunks
+                .into_iter()
+                .zip(vectors)
+                .zip(content_hashes)
+                .map(|((c, v), h)| (c, v, h))
+                .collect()),
             Err(batch_err) => {
                 tracing::warn!(error = %batch_err, "batch embed failed, falling back to per-chunk");
                 let mut result = Vec::new();
@@ -497,7 +479,10 @@ impl Indexer {
             .iter()
             .map(|(c, _, _)| chunk_id(&c.file_path, &c.heading))
             .collect();
-        let file_paths: Vec<&str> = chunks.iter().map(|(c, _, _)| c.file_path.as_str()).collect();
+        let file_paths: Vec<&str> = chunks
+            .iter()
+            .map(|(c, _, _)| c.file_path.as_str())
+            .collect();
         let headings: Vec<&str> = chunks.iter().map(|(c, _, _)| c.heading.as_str()).collect();
         let contents: Vec<&str> = chunks.iter().map(|(c, _, _)| c.content.as_str()).collect();
         let dates: Vec<Option<&str>> = chunks
@@ -510,7 +495,13 @@ impl Indexer {
             .collect();
         let tags: Vec<Option<String>> = chunks
             .iter()
-            .map(|(c, _, _)| c.frontmatter.tags.as_ref().map(serde_json::to_string).transpose())
+            .map(|(c, _, _)| {
+                c.frontmatter
+                    .tags
+                    .as_ref()
+                    .map(serde_json::to_string)
+                    .transpose()
+            })
             .collect::<Result<Vec<_>, _>>()?;
         let tags: Vec<Option<&str>> = tags.iter().map(|t| t.as_deref()).collect();
         let projects: Vec<Option<&str>> = chunks
@@ -521,7 +512,10 @@ impl Indexer {
         // r[impl index.embed.model-version]
         let model_names: Vec<&str> = std::iter::repeat_n(model_name, chunks.len()).collect();
 
-        let flat_values: Vec<f32> = chunks.iter().flat_map(|(_, v, _)| v.iter().copied()).collect();
+        let flat_values: Vec<f32> = chunks
+            .iter()
+            .flat_map(|(_, v, _)| v.iter().copied())
+            .collect();
         let values = Float32Array::from(flat_values);
         let vector = arrow_array::FixedSizeListArray::new(
             Arc::new(Field::new("item", DataType::Float32, true)),
@@ -588,15 +582,19 @@ impl Indexer {
     }
 
     async fn open_or_create_table(&self, dimension: usize) -> Result<Table> {
-        if self.db.table_names().execute().await?.contains(&"chunks".to_string()) {
+        if self
+            .db
+            .table_names()
+            .execute()
+            .await?
+            .contains(&"chunks".to_string())
+        {
             Ok(self.db.open_table("chunks").execute().await?)
         } else {
             let schema = Self::chunks_schema(dimension);
             let batch = Self::empty_batch(&schema, dimension)?;
-            let batches = RecordBatchIterator::new(
-                vec![Ok(batch)].into_iter(),
-                Arc::new(schema.clone()),
-            );
+            let batches =
+                RecordBatchIterator::new(vec![Ok(batch)].into_iter(), Arc::new(schema.clone()));
             self.db
                 .create_table("chunks", Box::new(batches))
                 .execute()
@@ -707,7 +705,11 @@ mod tests {
     async fn scan_recursive() {
         let (indexer, brain, _) = setup_indexer().await;
         write_md(&brain.path().join("root.md"), "## Root\nContent.").await;
-        write_md(&brain.path().join("sub/dir/nested.md"), "## Nested\nContent.").await;
+        write_md(
+            &brain.path().join("sub/dir/nested.md"),
+            "## Nested\nContent.",
+        )
+        .await;
 
         let stats = indexer.full_reindex().await.unwrap();
         assert_eq!(stats.files_processed, 2);
@@ -837,7 +839,10 @@ mod tests {
 
         let stats = indexer.full_reindex().await.unwrap();
         assert_eq!(stats.files_processed, 1);
-        assert_eq!(stats.chunks_indexed, 2, "both chunks should succeed via per-chunk fallback");
+        assert_eq!(
+            stats.chunks_indexed, 2,
+            "both chunks should succeed via per-chunk fallback"
+        );
     }
 
     #[tokio::test]
